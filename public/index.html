@@ -58,7 +58,6 @@ nav.tabs button[aria-current="true"]{background:var(--navy);color:var(--navy-ink
 .day .d{font-size:26px;font-weight:800;line-height:1}
 .day .w{font-size:12px;opacity:.85;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .day .n{font-size:12px;margin-top:8px;font-weight:600;white-space:nowrap}
-.day .moved{position:absolute;top:6px;right:8px;font-size:11px;font-weight:700}
 .day.past{opacity:.55}
 @media (max-width:760px){.strip{grid-template-columns:repeat(5,minmax(0,1fr))}}
 
@@ -198,16 +197,16 @@ function textOn(hex){const h=hex.replace("#","");const r=parseInt(h.slice(0,2),1
 function fechaLarga(d){return DIAS[d.getDay()]+" "+d.getDate()+" de "+MESES[d.getMonth()]+" de "+d.getFullYear()}
 function fechaCorta(d){return String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear()}
 
-/* Calendario Perpetuo DNIT: terminación 0→7, 1→9 … 9→25 del mes siguiente al período; inhábil → próximo día hábil */
+/* Vencimientos fijos: VENC. 1→día 7, VENC. 2→día 9 … VENC. 10→día 25 del mes siguiente al período. No se trasladan. */
 function vencAuto(t,periodo){
-  const {y,m}=parsePer(periodo);const base=new Date(y,m+1,7+2*t);let d=new Date(base);
+  const {y,m}=parsePer(periodo);const fecha=new Date(y,m+1,7+2*t);
   const fer=new Set(S.config.feriados||[]);
-  while(d.getDay()===0||d.getDay()===6||fer.has(iso(d))) d.setDate(d.getDate()+1);
-  return {fecha:d,base,movido:iso(d)!==iso(base)};
+  const inhabil=fecha.getDay()===0||fecha.getDay()===6||fer.has(iso(fecha));
+  return {fecha,base:fecha,movido:false,inhabil};
 }
 function vencDe(cl,l,periodo){
   const t=lastDigit(cl.ruc);if(t===null)return null;
-  if(l&&l.vencManual) return {fecha:fromIso(l.vencManual),base:vencAuto(t,periodo).base,movido:false,manual:true};
+  if(l&&l.vencManual) return {fecha:fromIso(l.vencManual),base:vencAuto(t,periodo).base,movido:false,inhabil:false,manual:true};
   return vencAuto(t,periodo);
 }
 function calc(l){
@@ -296,9 +295,8 @@ function tablero(){
   for(let t=0;t<10;t++){
     const v=vencAuto(t,S.periodo);const col=colorFor(t),tx=textOn(col);
     const mine=rows.filter(r=>r.t===t);const done=mine.filter(r=>r.estado==="pres").length;
-    strip+=`<button class="day ${v.fecha<today?"past":""}" data-day="${t}" aria-pressed="${S.dayFilter===t}" style="background:${col};color:${tx}" title="Terminación de RUC ${t}">
-      ${v.movido?`<span class="moved" title="Trasladado desde el ${v.base.getDate()}">↷</span>`:""}
-      <div class="d">${v.fecha.getDate()}</div><div class="w">${DIAS_C[v.fecha.getDay()]} · RUC ${t}</div>
+    strip+=`<button class="day ${v.fecha<today?"past":""}" data-day="${t}" aria-pressed="${S.dayFilter===t}" style="background:${col};color:${tx}" title="VENC. ${t+1}, día ${7+2*t}">
+      <div class="d">${v.fecha.getDate()}</div><div class="w">${DIAS_C[v.fecha.getDay()]} · VENC. ${t+1}</div>
       <div class="n">${mine.length?done+"/"+mine.length+" listos":"—"}</div></button>`;
   }
   const q=S.q.trim().toLowerCase();
@@ -313,7 +311,7 @@ function tablero(){
       const tag={none:'<span class="tag none">Sin cargar</span>',pend:'<span class="tag pend">Pendiente</span>',env:'<span class="tag env">Enviado</span>',pres:'<span class="tag pres">Presentado</span>'}[r.estado];
       return `<tr class="r" data-open="${r.id}" tabindex="0"><td class="band"><span style="background:${col}"></span></td>
       <td><div class="name">${esc(r.c.nombre)}${r.c.notas?`<span class="tag exc" title="${esc(r.c.notas)}">Excepción</span>`:""}</div><div class="sub">RUC ${esc(r.c.ruc)}${r.c.dv!==""&&r.c.dv!=null?"-"+esc(r.c.dv):""}</div></td>
-      <td>${r.v?`<div>${DIAS_C[r.v.fecha.getDay()]} ${fechaCorta(r.v.fecha)}</div><div class="sub">${r.v.manual?"Fecha ajustada a mano":r.v.movido?"Trasladado por día inhábil":"Terminación "+r.t}</div>`:'<span class="sub">RUC inválido</span>'}</td>
+      <td>${r.v?`<div>${DIAS_C[r.v.fecha.getDay()]} ${fechaCorta(r.v.fecha)}</div><div class="sub">${r.v.manual?"Fecha ajustada a mano":"VENC. "+(r.t+1)+(r.v.inhabil?" · cae en día inhábil":"")}</div>`:'<span class="sub">RUC inválido</span>'}</td>
       <td class="num">${res}</td><td>${tag}</td></tr>`}).join("")}</tbody></table></div>`;
   return periodBar()+`<div class="strip">${strip}</div>
   <div class="filters"><input type="search" id="q" placeholder="Buscar por nombre o RUC" value="${esc(S.q)}">
@@ -343,10 +341,10 @@ function clientesView(){
 }
 function ajustesView(){
   let cs="";for(let t=0;t<10;t++){const c=colorFor(t);
-    cs+=`<div class="c"><input type="color" data-col="${t}" value="${c}" aria-label="Color terminación ${t}"><div><div class="name">RUC ${t} · día ${7+2*t}</div><input type="text" data-colt="${t}" value="${c}" aria-label="Código de color terminación ${t}"></div></div>`}
-  return `<div class="stack settings"><div class="panel"><h2>Colores por vencimiento</h2><p>Cada terminación de RUC tiene su día fijo de vencimiento y su color. Podés pegar el código hexadecimal (por ejemplo #1B5E9E).</p>
+    cs+=`<div class="c"><input type="color" data-col="${t}" value="${c}" aria-label="Color VENC. ${t+1}"><div><div class="name">VENC. ${t+1} · día ${7+2*t}</div><input type="text" data-colt="${t}" value="${c}" aria-label="Código de color VENC. ${t+1}"></div></div>`}
+  return `<div class="stack settings"><div class="panel"><h2>Colores por vencimiento</h2><p>Cada vencimiento (VENC. 1 al 10) tiene su día fijo y su color. Podés pegar el código hexadecimal (por ejemplo #1B5E9E).</p>
   <div class="colors">${cs}</div><div style="padding:0 16px 16px"><button class="btn" id="resetCol">Restablecer colores de ejemplo</button></div></div>
-  <div class="panel"><h2>Feriados</h2><p>Un feriado por línea, formato AAAA-MM-DD. Si un vencimiento cae en sábado, domingo o en uno de estos días, pasa al siguiente día hábil. Revisá los feriados que el Gobierno traslada cada año.</p>
+  <div class="panel"><h2>Feriados</h2><p>Un feriado por línea, formato AAAA-MM-DD. Las fechas de vencimiento no cambian nunca: los feriados solo sirven para avisar en la lista cuando un vencimiento cae en día inhábil.</p>
   <textarea id="fer" spellcheck="false">${(S.config.feriados||[]).join("\n")}</textarea>
   <div style="padding:0 16px 16px"><button class="btn primary" id="saveFer">Guardar feriados</button></div></div></div>`;
 }
@@ -361,7 +359,7 @@ function editorView(){
    <div class="meta">
     <div class="f"><label for="est">Estado</label><select id="est">${Object.entries(ESTADOS).map(([k,v])=>`<option value="${k}" ${l.estado===k?"selected":""}>${v}</option>`).join("")}</select></div>
     <div class="f"><label for="vm">Vencimiento</label><input type="date" id="vm" value="${v?iso(v.fecha):""}">
-      <div class="hint">${v&&v.manual?`Ajustada a mano. <button class="linkbtn" id="vmReset">Volver a la fecha automática</button>`:`Automática según terminación ${t}${v&&v.movido?", trasladada por día inhábil":""}`}</div></div>
+      <div class="hint">${v&&v.manual?`Ajustada a mano. <button class="linkbtn" id="vmReset">Volver a la fecha automática</button>`:`Automática: VENC. ${t+1}, día ${7+2*t}${v&&v.inhabil?" (cae en día inhábil)":""}`}</div></div>
     <div class="f"><label for="man">IVA a pagar</label><select id="man"><option value="0" ${!l.manual?"selected":""}>Calcular automáticamente</option><option value="1" ${l.manual?"selected":""}>Ingresar a mano</option></select>
       ${l.manual?`<input id="ivaM" inputmode="numeric" style="margin-top:6px;text-align:right" value="${l.ivaManual?gs(l.ivaManual):""}" placeholder="Monto a pagar">`:""}</div>
    </div>
