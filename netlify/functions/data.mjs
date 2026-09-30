@@ -14,6 +14,19 @@ async function readBucket(store, key) {
   return (await store.get(key, { type: "json" })) || {};
 }
 
+// Versión liviana para el tablero: quita el detalle de comprobantes (fecha, número, tercero)
+function resumen(bucket) {
+  const out = {};
+  for (const [cid, d] of Object.entries(bucket)) {
+    const s = {};
+    for (const [k, v] of Object.entries(d || {})) {
+      s[k] = Array.isArray(v) ? v.map((x) => ({ m: x.m, iva: x.iva })) : v;
+    }
+    out[cid] = s;
+  }
+  return out;
+}
+
 async function updateBucket(store, key, fn) {
   for (let i = 0; i < 8; i++) {
     const cur = await store.getWithMetadata(key, { type: "json" });
@@ -37,20 +50,42 @@ export default async (req) => {
 
   if (req.method === "GET") {
     const url = new URL(req.url);
+    // Un solo documento completo (con detalle de comprobantes) para abrir la ficha de un cliente
+    const doc = url.searchParams.get("doc");
+    if (doc) {
+      const p = url.searchParams.get("periodo") || "";
+      if (!ID.test(doc) || !PER.test(p)) return json({ error: "Solicitud inválida" }, 400);
+      const b = await readBucket(store, "liq/" + p);
+      return json({ doc: b[doc] || null });
+    }
     const periodos = (url.searchParams.get("periodos") || "").split(",").filter((p) => PER.test(p)).slice(0, 6);
+    const liviano = url.searchParams.get("resumen") === "1";
     const [clientes, config, ...meses] = await Promise.all([
       readBucket(store, "clientes"),
       readBucket(store, "config"),
       ...periodos.map((p) => readBucket(store, "liq/" + p)),
     ]);
     const liq = {};
-    periodos.forEach((p, i) => { liq[p] = meses[i]; });
+    periodos.forEach((p, i) => { liq[p] = liviano ? resumen(meses[i]) : meses[i]; });
     return json({ clientes, config, liq });
   }
 
   let body;
   try { body = await req.json(); } catch { return json({ error: "Solicitud inválida" }, 400); }
-  const { col, id, periodo, data } = body || {};
+  const { col, id, periodo, data, batch } = body || {};
+
+  // Importación masiva de clientes (hasta 150 por solicitud)
+  if (req.method === "PUT" && col === "clientes" && batch) {
+    const ids = Object.keys(batch);
+    if (!ids.length || ids.length > 150) return json({ error: "Lote inválido" }, 400);
+    for (const k of ids) {
+      const v = batch[k];
+      if (!ID.test(k) || !v || typeof v !== "object" || Array.isArray(v) || JSON.stringify(v).length > 5000) return json({ error: "Cliente inválido en el lote" }, 400);
+    }
+    const ok = await updateBucket(store, "clientes", (o) => { Object.assign(o, batch); });
+    return ok ? json({ ok: true, n: ids.length }) : json({ error: "Muchos cambios simultáneos, reintentá." }, 409);
+  }
+
   if (!ID.test(id || "")) return json({ error: "Identificador inválido" }, 400);
 
   let key;
@@ -60,7 +95,7 @@ export default async (req) => {
 
   if (req.method === "PUT") {
     if (!data || typeof data !== "object" || Array.isArray(data)) return json({ error: "Datos inválidos" }, 400);
-    if (JSON.stringify(data).length > 50000) return json({ error: "Documento demasiado grande" }, 413);
+    if (JSON.stringify(data).length > 600000) return json({ error: "Documento demasiado grande" }, 413);
     const ok = await updateBucket(store, key, (o) => { o[id] = data; });
     return ok ? json({ ok: true }) : json({ error: "Muchos cambios simultáneos, reintentá." }, 409);
   }
